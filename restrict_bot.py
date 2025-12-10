@@ -644,48 +644,60 @@ async def broadcast(bot, message):
 # --- BOT HANDLERS: PROCESSING LINKS (CORE LOGIC) ---
 # ==============================================================================
 
-# 1. DIRECT LINK HANDLER (Private & Group)
-# FIX 1: Added & ~filters.forwarded to immediately ignore "Leech Started" forwards
-@app.on_message((filters.text | filters.caption) & (filters.private | filters.group) & ~filters.forwarded & ~filters.command(["dl", "start", "help", "cancel", "botstats", "login", "logout", "broadcast", "status"]))
+# 1. DIRECT LINK HANDLER (Private Only)
+# This handles pasting links in DM without commands.
+# It uses 'filters.private' so it COMPLETELY IGNORES groups (Silent Mode).
+@app.on_message((filters.text | filters.caption) & filters.private & ~filters.command(["dl", "start", "help", "cancel", "botstats", "login", "logout", "broadcast", "status"]))
 async def save(client: Client, message: Message):
-    # --- SAFETY CHECK: Ignore messages from Channels/Anonymous Admins ---
-    if not message.from_user:
-        return 
-    
     user_id = message.from_user.id
     
-    # --- PENDING TASK HANDLER (Waiting for ID or Speed) ---
+    # Check if user is already in a setup flow (DM only)
     if user_id in PENDING_TASKS:
-        should_process = True
-        
-        # FIX 2: Group Guard
-        # If in a group, ONLY accept input if it is a REPLY to the bot.
-        if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-            # Must be a reply
-            if not message.reply_to_message:
-                should_process = False
-            # Must be a reply to THIS bot
-            elif not (message.reply_to_message.from_user and message.reply_to_message.from_user.is_self):
-                should_process = False
-
-        if should_process:
-            if PENDING_TASKS[user_id].get("status") == "waiting_id":
-                await process_custom_destination(client, message)
-                return
-            if PENDING_TASKS[user_id].get("status") == "waiting_speed":
-                await process_speed_input(client, message)
-                return
-        
-        # If should_process is False (e.g., random chat msg), we fall through.
-        # This allows checking if it's a NEW link, otherwise we ignore it.
+        if PENDING_TASKS[user_id].get("status") == "waiting_id":
+            await process_custom_destination(client, message)
+            return
+        if PENDING_TASKS[user_id].get("status") == "waiting_speed":
+            await process_speed_input(client, message)
+            return
 
     link_text = message.text or message.caption
     if not link_text or "https://t.me/" not in link_text:
         return 
+    
+    # In DM, we always ask for Destination first
+    PENDING_TASKS[user_id] = {"link": link_text, "status": "waiting_choice"}
+    
+    buttons = [
+        [InlineKeyboardButton("📂 Send to DM (Here)", callback_data="dest_dm")],
+        [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")]
+    ]
+    await message.reply(
+        "**🔗 Link Received!**\n\nWhere should I send the downloaded files?",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        quote=True
+    )
 
-    # --- GROUP MODE: Auto-Set Destination -> Ask Speed ---
+# 2. /dl COMMAND HANDLER (Interactive Group Mode)
+@app.on_message(filters.command(["dl"]) & (filters.private | filters.group))
+async def dl_handler(client: Client, message: Message):
+    user_id = message.from_user.id
+    
+    # 1. Extract Link (From Reply or Command Args)
+    link_text = ""
+    reply = message.reply_to_message
+    
+    if reply and (reply.text or reply.caption):
+        link_text = reply.text or reply.caption
+    elif len(message.command) > 1:
+        link_text = message.text.split(None, 1)[1]
+        
+    if not link_text or "https://t.me/" not in link_text:
+        await message.reply_text("**Usage:**\n• Reply to a link with /dl\n• Or send `/dl https://t.me/...`")
+        return
+
+    # 2. GROUP BEHAVIOR (Auto-Set Destination -> Ask Speed)
+    # This activates ONLY when you use /dl in a group.
     if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        # Pre-fill the destination as THIS group/topic
         PENDING_TASKS[user_id] = {
             "link": link_text,
             "dest_chat_id": message.chat.id,
@@ -693,11 +705,11 @@ async def save(client: Client, message: Message):
             "dest_title": message.chat.title or "This Group",
             "status": "waiting_speed" 
         }
-        # Skip "Where to send?" and go straight to "How fast?"
+        # We reply to the /dl command with the Speed buttons
         await ask_for_speed(message)
         return
 
-    # --- PRIVATE MODE: Ask Destination First ---
+    # 3. PRIVATE BEHAVIOR (Standard Setup)
     PENDING_TASKS[user_id] = {"link": link_text, "status": "waiting_choice"}
     
     buttons = [
@@ -709,45 +721,7 @@ async def save(client: Client, message: Message):
         reply_markup=InlineKeyboardMarkup(buttons),
         quote=True
     )
-
-# 2. /dl COMMAND
-@app.on_message(filters.command(["dl"]) & (filters.private | filters.group | filters.channel))
-async def dl_handler(client: Client, message: Message):
     
-    # Group/Channel: Start Immediately
-    if message.chat.type != enums.ChatType.PRIVATE:
-        replied_message = message.reply_to_message
-        if not replied_message:
-            return await message.reply_text("**Reply to a link with /dl.**")
-        link_text = replied_message.text or replied_message.caption
-        if not link_text:
-            return await message.reply_text("**Reply to a link with /dl.**")
-        
-        req_user_id = message.from_user.id if message.from_user else None
-        asyncio.create_task(process_links_logic(client, message, link_text, acc_user_id=req_user_id))
-        return
-
-    # Private: Show Buttons
-    replied_message = message.reply_to_message
-    if not replied_message:
-        return await message.reply_text("**Reply to a link with /dl to start.**")
-    link_text = replied_message.text or replied_message.caption
-    if not link_text:
-        return await message.reply_text("**Reply to a link with /dl.**")
-        
-    user_id = message.from_user.id
-    PENDING_TASKS[user_id] = {"link": link_text, "status": "waiting_choice"}
-    
-    buttons = [
-        [InlineKeyboardButton("📂 Send to DM (Here)", callback_data="dest_dm")],
-        [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")]
-    ]
-    await message.reply(
-        "**🔗 Link Received!**\n\nWhere should I send the downloaded files?",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        quote=True
-    )
-
 @app.on_callback_query(filters.regex("^dest_"))
 async def destination_callback(client: Client, query):
     user_id = query.from_user.id
