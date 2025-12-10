@@ -300,7 +300,9 @@ def progress(current, total, message, typ):
     dt = now - rec["last_time"]
     if dt >= 1 or current == total:
         delta_bytes = current - rec["last_current"]
-        speed = delta_bytes / dt if dt > 0 else 0
+        # FIX: Ensure dt is never 0 to prevent crash
+        if dt <= 0: dt = 0.1 
+        speed = delta_bytes / dt
         rec["speed"] = speed
         rec["last_time"] = now
         rec["last_current"] = current
@@ -404,11 +406,75 @@ async def send_start(client: Client, message: Message):
 async def send_help(client: Client, message: Message):
     await client.send_message(message.chat.id, f"{HELP_TXT}")
 
+# --- CANCEL COMMAND (Interactive) ---
 @app.on_message(filters.command(["cancel"]) & (filters.private | filters.group))
 async def send_cancel(client: Client, message: Message):
-    batch_temp.IS_BATCH[message.from_user.id] = True
-    await client.send_message(message.chat.id, "**Batch Successfully Cancelled.**")
+    user_id = message.from_user.id
+    
+    # Check if user has active tasks
+    if batch_temp.ACTIVE_TASKS[user_id] <= 0:
+        await message.reply("✅ **No active tasks to cancel.**")
+        return
 
+    buttons = [
+        [InlineKeyboardButton("🛑 Cancel ALL Tasks", callback_data="cancel_all")],
+        [InlineKeyboardButton("🎯 Cancel Specific Task", callback_data="cancel_list")],
+        [InlineKeyboardButton("❌ Close Menu", callback_data="close_menu")]
+    ]
+    
+    await message.reply(
+        "**🚫 Cancel Tasks**\n\nChoose an option:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        quote=True
+    )
+
+@app.on_callback_query(filters.regex("^cancel_"))
+async def cancel_callback(client: Client, query):
+    user_id = query.from_user.id
+    data = query.data
+    
+    if data == "cancel_all":
+        batch_temp.IS_BATCH[user_id] = True # Sets the "Stop" flag
+        await query.message.edit("**🛑 Cancelling ALL tasks...**\n(This may take a moment to stop current downloads)")
+        # Reset active count manually after a delay if needed, but loop checks flag.
+        
+    elif data == "cancel_list":
+        # Check active tasks again
+        if user_id not in ACTIVE_PROCESSES:
+             await query.answer("No active tasks found!", show_alert=True)
+             return
+             
+        task_info = ACTIVE_PROCESSES[user_id]
+        # Since your current system tracks 1 active task detailed info per user in ACTIVE_PROCESSES,
+        # We show that one. If you expand to multi-task tracking later, you'd list them here.
+        
+        task_name = task_info.get('item', 'Unknown Task')
+        buttons = [
+            [InlineKeyboardButton(f"🛑 Stop: {task_name[:20]}...", callback_data="cancel_all")], # Re-use cancel_all for single user limit
+            [InlineKeyboardButton("🔙 Back", callback_data="cancel_menu")]
+        ]
+        await query.message.edit("**Select Task to Cancel:**", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data == "cancel_menu":
+        # Go back to main menu
+        buttons = [
+            [InlineKeyboardButton("🛑 Cancel ALL Tasks", callback_data="cancel_all")],
+            [InlineKeyboardButton("🎯 Cancel Specific Task", callback_data="cancel_list")],
+            [InlineKeyboardButton("❌ Close Menu", callback_data="close_menu")]
+        ]
+        await query.message.edit("**🚫 Cancel Tasks**", reply_markup=InlineKeyboardMarkup(buttons))
+
+@app.on_callback_query(filters.regex("^close_menu"))
+async def close_menu(client, query):
+    await query.message.delete()
+
+@app.on_callback_query(filters.regex("^cancel_setup"))
+async def cancel_setup_handler(client, query):
+    user_id = query.from_user.id
+    if user_id in PENDING_TASKS:
+        del PENDING_TASKS[user_id]
+    await query.message.edit("❌ **Task Setup Cancelled.**")
+    
 @app.on_message(filters.command(["status"]) & filters.user(ADMINS))
 async def status_style_handler(client, message):
     # 1. Calculate Uptime
@@ -669,7 +735,8 @@ async def save(client: Client, message: Message):
     
     buttons = [
         [InlineKeyboardButton("📂 Send to DM (Here)", callback_data="dest_dm")],
-        [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")]
+        [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")],
+        [InlineKeyboardButton("❌ Cancel Setup", callback_data="cancel_setup")] # <--- NEW BUTTON
     ]
     await message.reply(
         "**🔗 Link Received!**\n\nWhere should I send the downloaded files?",
@@ -737,22 +804,31 @@ async def destination_callback(client: Client, query):
         
     elif choice == "dest_custom":
         PENDING_TASKS[user_id]["status"] = "waiting_id"
+        buttons = [[InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]] # <--- NEW
         await query.message.edit(
             "📝 **Send the Target Chat ID**\n\n"
             "Examples:\n"
             "• Channel/Group: `-100123456789`\n"
             "• Specific Topic: `-100123456789/5`\n\n"
-            "⚠️ __Make sure I am an admin in that chat!__"
+            "⚠️ __Make sure I am an admin in that chat!__",
+            reply_markup=InlineKeyboardMarkup(buttons)
         )
-
+        
 async def process_custom_destination(client: Client, message: Message):
     user_id = message.from_user.id
     text = message.text.strip()
     
-    dest_chat_id = None
-    dest_thread_id = None
-    
+    # 1. Cleanup: Delete the bot's "Send ID" question message
     try:
+        if message.reply_to_message and message.reply_to_message.from_user.is_self:
+            await message.reply_to_message.delete()
+    except: pass
+
+    # 2. Process Input
+    try:
+        dest_chat_id = None
+        dest_thread_id = None
+        
         if "/" in text:
             parts = text.split("/")
             dest_chat_id = int(parts[0])
@@ -760,6 +836,7 @@ async def process_custom_destination(client: Client, message: Message):
         else:
             dest_chat_id = int(text)
             
+        # Verify Chat
         try:
             chat = await client.get_chat(dest_chat_id)
             title = chat.title or "Target Chat"
@@ -767,60 +844,90 @@ async def process_custom_destination(client: Client, message: Message):
             await message.reply(f"❌ **Invalid Chat ID** or I am not an admin there.\nError: `{e}`")
             return
 
+        # 3. Save Data & Advance State
         PENDING_TASKS[user_id]["dest_chat_id"] = dest_chat_id
         PENDING_TASKS[user_id]["dest_thread_id"] = dest_thread_id
         PENDING_TASKS[user_id]["dest_title"] = title
         
+        # IMPORTANT: Update Status to next step
+        PENDING_TASKS[user_id]["status"] = "waiting_speed"
+        
+        # 4. Trigger Next Step
         await ask_for_speed(message)
 
     except ValueError:
         await message.reply("❌ Invalid ID format. Please send a number like `-100...`")
-
+        
 async def ask_for_speed(message: Message):
     buttons = [
         [InlineKeyboardButton("⚡ Default (3s)", callback_data="speed_default")],
-        [InlineKeyboardButton("⚙️ Manual Speed", callback_data="speed_manual")]
+        [InlineKeyboardButton("⚙️ Manual Speed", callback_data="speed_manual")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]
     ]
+    text = "**🚀 Select Forwarding Speed**\n\nHow fast should I process messages?"
+    
+    # If message is from a callback (editing existing message)
     if isinstance(message, Message) and message.from_user.is_bot: 
-         await message.edit("**🚀 Select Forwarding Speed**\n\nHow fast should I process messages?", reply_markup=InlineKeyboardMarkup(buttons))
+         await message.edit(text, reply_markup=InlineKeyboardMarkup(buttons))
+    # If message is from user (replying to their input)
     else:
-         await message.reply("**🚀 Select Forwarding Speed**\n\nHow fast should I process messages?", reply_markup=InlineKeyboardMarkup(buttons))
-
+         await message.reply(text, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
+         
 @app.on_callback_query(filters.regex("^speed_"))
 async def speed_callback(client: Client, query):
     user_id = query.from_user.id
+    
     if user_id not in PENDING_TASKS:
-        return await query.answer("❌ Task expired.", show_alert=True)
+        await query.answer("❌ Task expired. Please start over.", show_alert=True)
+        try: await query.message.delete()
+        except: pass
+        return
     
     choice = query.data
     task_data = PENDING_TASKS[user_id]
     
     if choice == "speed_default":
+        # Delete the buttons immediately
+        try: await query.message.delete()
+        except: pass
+        
+        # Start Task
+        if user_id in PENDING_TASKS: del PENDING_TASKS[user_id] # Clear setup state
         await start_task_final(client, query.message, task_data, delay=3, user_id=user_id)
-        del PENDING_TASKS[user_id]
         
     elif choice == "speed_manual":
         PENDING_TASKS[user_id]["status"] = "waiting_speed"
+        # Edit message to ask for number
         await query.message.edit(
             "⏱ **Enter Delay in Seconds**\n\n"
             "Send a number (e.g., `0`, `5`, `10`).\n"
             "0 = Max Speed (Risk of FloodWait)\n"
-            "3 = Safe Default"
+            "3 = Safe Default",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]])
         )
-
+        
 async def process_speed_input(client: Client, message: Message):
     user_id = message.from_user.id
     text = message.text.strip()
     
+    # Cleanup previous bot message
+    try:
+        if message.reply_to_message and message.reply_to_message.from_user.is_self:
+            await message.reply_to_message.delete()
+    except: pass
+
     if not text.isdigit():
         return await message.reply("❌ Please send a valid number (0, 1, 2...).")
     
     delay = int(text)
-    task_data = PENDING_TASKS[user_id]
     
-    await start_task_final(client, message, task_data, delay, user_id=user_id)
-    del PENDING_TASKS[user_id]
-
+    if user_id in PENDING_TASKS:
+        task_data = PENDING_TASKS[user_id]
+        del PENDING_TASKS[user_id] # Clear setup state
+        await start_task_final(client, message, task_data, delay, user_id=user_id)
+    else:
+        await message.reply("❌ Task expired.")
+        
 async def start_task_final(client: Client, message_context: Message, task_data: dict, delay: int, user_id: int):
     dest = task_data.get("dest_title", "Direct Message")
     
@@ -950,6 +1057,9 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
         filter_thread_id = None 
 
         if batch_temp.ACTIVE_TASKS[user_id] >= MAX_CONCURRENT_TASKS_PER_USER:
+            # FIX: Remove the "Status" entry because we are rejecting this task!
+            if user_id in ACTIVE_PROCESSES:
+                del ACTIVE_PROCESSES[user_id]
             return await message.reply_text(f"**Limit Reached:** Please wait for tasks to finish.")
         
         batch_temp.ACTIVE_TASKS[user_id] += 1
@@ -960,7 +1070,7 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             
             # --- STRICT TOPIC PARSING LOGIC ---
             clean_text = text.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("c/", "")
-            parts = clean_text.split("/")
+            parts = clean_text.split("/")            
             
             # 1. Detect Topic ID
             if len(parts) >= 3 and parts[1].isdigit():
@@ -1134,21 +1244,27 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             print(f"Error in task setup: {e}")
  
         finally:
+            # 1. Clean up Status List
             if user_id in ACTIVE_PROCESSES:
                 del ACTIVE_PROCESSES[user_id]
 
+            # 2. Reset Task Counter
             batch_temp.ACTIVE_TASKS[user_id] -= 1
             if batch_temp.ACTIVE_TASKS[user_id] < 0:
                 batch_temp.ACTIVE_TASKS[user_id] = 0       
+            
             if batch_temp.ACTIVE_TASKS[user_id] == 0:
                 batch_temp.IS_BATCH[user_id] = False
             
+            # 3. Stop Login Session
             if LOGIN_SYSTEM == True and acc:
                 try: 
                     if acc.is_connected: await acc.stop()
                 except: pass
             
-            if was_cancelled:
+            # 4. Send Completion/Cancel Message
+            # We check if 'was_cancelled' exists to avoid crashing
+            if 'was_cancelled' in locals() and was_cancelled:
                 try:
                     await client.send_message(
                         chat_id=message.chat.id,
@@ -1160,21 +1276,24 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                     )
                 except: pass
             else:
-                try:
-                    await client.send_message(
-                        chat_id=message.chat.id,
-                        text=f"**Batch Completed!** ✨ {user_mention}\n\n"
-                             f"**Total Requested:** `{total_count}`\n"
-                             f"**Successfully Saved:** `{success_count}`\n"
-                             f"**Failed/Skipped:** `{failed_count}`",
-                        reply_to_message_id=message.id
-                    )
-                except: pass
+                # Only send "Completed" if we actually started processing (total_count > 0)
+                if 'total_count' in locals() and total_count > 0:
+                    try:
+                        await client.send_message(
+                            chat_id=message.chat.id,
+                            text=f"**Batch Completed!** ✨ {user_mention}\n\n"
+                                 f"**Total Requested:** `{total_count}`\n"
+                                 f"**Successfully Saved:** `{success_count}`\n"
+                                 f"**Failed/Skipped:** `{failed_count}`",
+                            reply_to_message_id=message.id
+                        )
+                    except: pass
             
-            if status_message:
+            # 5. Delete the Progress Message
+            if 'status_message' in locals() and status_message:
                 try: await status_message.delete()
-                except: pass 
-
+                except: pass
+                
 async def handle_private(client: Client, acc, message: Message, chatid, msgid: int, index: int, total_count: int, status_message: Message, dest_chat_id, dest_thread_id, delay, user_id):
     
     msg = None
@@ -1370,16 +1489,26 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     upload_success = False 
                     break # Fatal error, stop trying
     
+    # ... inside handle_private, right before return ...
+    
+    # 1. Clean up Progress Dictionary to prevent RAM Leak
+    try:
+        if f"{task_id}:down" in PROGRESS:
+            del PROGRESS[f"{task_id}:down"]
+        if f"{task_id}:up" in PROGRESS:
+            del PROGRESS[f"{task_id}:up"]
+    except: pass
+
+    # 2. Clean up Folder
     try:
         if task_folder_path.exists():
             shutil.rmtree(task_folder_path)
-
     except Exception as e:
         print(f"Error cleaning up folder {task_folder_path}: {e}")
 
     gc.collect()
     return upload_success 
-
+    
 # ==============================================================================
 # --- KOYEB HEALTH CHECK ---
 # ==============================================================================
@@ -1412,21 +1541,29 @@ async def start_koyeb_health_check(host: str = "0.0.0.0", port: int | str = 8080
 # --- MAIN ENTRY POINT ---
 # ==============================================================================
 
-if __name__ == "__main__":
-    print("Bot Started Powered By @DestinyBots")
-    
-    # --- Clean trash on startup ---
+async def main():
+    # 1. Clean trash on startup
     if os.path.exists("./downloads"):
         try:
             shutil.rmtree("./downloads")
             print("✅ Cleanup: Deleted old downloads folder.")
         except Exception as e:
             print(f"⚠️ Cleanup Error: {e}")
-    # -------------------------------------
-
-    # Start Health Check in Background
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_koyeb_health_check())
+            
+    # 2. Start the Bot
+    await app.start()
+    print("Bot Started Powered By @DestinyBots")
     
-    # Run Pyrogram Client
-    app.run()
+    # 3. Start Health Check (Now safe because loop is running)
+    asyncio.create_task(start_koyeb_health_check())
+    
+    # 4. Keep running until stopped
+    await idle()
+    
+    # 5. Stop cleanly
+    await app.stop()
+
+if __name__ == "__main__":
+    # app.run() automatically creates the loop and runs our main() function
+    app.run(main())
+    
