@@ -32,6 +32,13 @@ DB_URI = os.environ.get("DB_URI", "")
 DB_NAME = os.environ.get("DB_NAME", "")
 STRING_SESSION = os.environ.get("STRING_SESSION", None)
 
+# Error Log Channel (Optional)
+# Usage: "-100xxxx" for channel, or "-100xxxx/5" for Group Topic
+LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "") 
+
+# Queue System
+TASK_QUEUE = defaultdict(list) # Stores pending tasks: user_id -> [task_data, ...]
+
 LOGIN_SYSTEM = os.environ.get("LOGIN_SYSTEM", "True").lower() == "true"
 ERROR_MESSAGE = os.environ.get("ERROR_MESSAGE", "True").lower() == "true"
 WAITING_TIME = int(os.environ.get("WAITING_TIME", 3))
@@ -147,8 +154,8 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=50,
-    sleep_threshold=5
+    workers=10,
+    sleep_threshold=20
 )
 
 BOT_START_TIME = time.time()
@@ -300,21 +307,17 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
             continue
         if rec["current"] == rec["total"] and rec["total"] > 0:
             break
-        percent = rec.get("percent", 0.0)
-        cur = rec.get("current", 0)
-        tot = rec.get("total", 0)
-        speed = rec.get("speed", 0.0)
-        eta = rec.get("eta")
-        bar = generate_bar(percent, length=12) # Slightly longer bar
+            
+        # ... (keep all the calculation code here: percent, speed, bar, etc.) ...
         
         # --- NEW STYLE ---
         status = (
             f"📥 **Downloading File ({index}/{total_count})**\n"
             f"└ 📂 `{max(0, total_count-index)}` remaining\n\n"
-            f"**{percent:.1f}%** │ `{bar}`\n\n"
-            f"🚀 **Speed:** `{_pretty_bytes(speed)}/s`\n"
-            f"💾 **Size:** `{_pretty_bytes(cur)} / {_pretty_bytes(tot)}`\n"
-            f"⏳ **ETA:** `{get_readable_time(int(eta) if eta else 0)}`"
+            f"**{rec.get('percent', 0):.1f}%** │ `{generate_bar(rec.get('percent', 0), length=12)}`\n\n"
+            f"🚀 **Speed:** `{_pretty_bytes(rec.get('speed', 0))}/s`\n"
+            f"💾 **Size:** `{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}`\n"
+            f"⏳ **ETA:** `{get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)}`"
         )
         # -----------------
 
@@ -324,12 +327,15 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
                 last_text = status
             except:
                 pass
-        await asyncio.sleep(10) # 10s is smoother than 15s
+        
+        # FIX: Changed from 10 to 20 seconds
+        await asyncio.sleep(20) 
+        
     try:
         await client.edit_message_text(chat, msg_id, f"✅ **Download Complete** ({index}/{total_count})\n⚡ **Processing file...**")
     except:
         pass
-
+        
 async def upstatus(client: Client, status_message: Message, chat, index: int, total_count: int):
     msg_id = status_message.id
     key = f"{msg_id}:up"
@@ -341,21 +347,17 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
             continue
         if rec["current"] == rec["total"] and rec["total"] > 0:
             break
-        percent = rec.get("percent", 0.0)
-        cur = rec.get("current", 0)
-        tot = rec.get("total", 0)
-        speed = rec.get("speed", 0.0)
-        eta = rec.get("eta")
-        bar = generate_bar(percent, length=12)
+            
+        # ... (keep all the calculation code here) ...
 
         # --- NEW STYLE ---
         status = (
             f"☁️ **Uploading File ({index}/{total_count})**\n"
             f"└ 📤 `{max(0, total_count-index)}` remaining\n\n"
-            f"**{percent:.1f}%** │ `{bar}`\n\n"
-            f"🚀 **Speed:** `{_pretty_bytes(speed)}/s`\n"
-            f"💾 **Size:** `{_pretty_bytes(cur)} / {_pretty_bytes(tot)}`\n"
-            f"⏳ **ETA:** `{get_readable_time(int(eta) if eta else 0)}`"
+            f"**{rec.get('percent', 0):.1f}%** │ `{generate_bar(rec.get('percent', 0), length=12)}`\n\n"
+            f"🚀 **Speed:** `{_pretty_bytes(rec.get('speed', 0))}/s`\n"
+            f"💾 **Size:** `{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}`\n"
+            f"⏳ **ETA:** `{get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)}`"
         )
         # -----------------
 
@@ -365,12 +367,15 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
                 last_text = status
             except:
                 pass
-        await asyncio.sleep(10)
+        
+        # FIX: Changed from 10 to 20 seconds
+        await asyncio.sleep(20)
+
     try:
         await client.edit_message_text(chat, msg_id, f"✅ **Upload Complete** ({index}/{total_count})")
     except:
         pass
-
+        
 def get_message_type(msg: Message):
     if msg.document: return "Document"
     if msg.video: return "Video"
@@ -745,8 +750,13 @@ async def login_handler(bot: Client, message: Message):
 async def broadcast_messages(user_id, message):
     try:
         await message.copy(chat_id=user_id)
+        # FIX: Sleep prevents "Broadcasting Flood"
+        await asyncio.sleep(1.5) 
         return True, "Success"
     except FloodWait as e:
+        # If floodwait is huge, just skip this user to save the broadcast
+        if e.value > 60:
+            return False, "Error"
         await asyncio.sleep(e.value)
         return await broadcast_messages(user_id, message)
     except InputUserDeactivated:
@@ -965,7 +975,13 @@ async def process_speed_input(client: Client, message: Message):
         pass
     if not text.isdigit():
         return await message.reply("❌ Please send a valid number (0, 1, 2...).")
+    
+    # FIX: Enforce minimum safety delay. "0" is dangerous.
     delay = int(text)
+    if delay < 3: 
+        delay = 3
+        await message.reply("⚠️ **Note:** To prevent FloodWait bans, minimum speed has been set to 3 seconds.")
+        
     if user_id in PENDING_TASKS:
         task_data = PENDING_TASKS[user_id]
         del PENDING_TASKS[user_id]
@@ -973,35 +989,104 @@ async def process_speed_input(client: Client, message: Message):
     else:
         await message.reply("❌ Task expired.")
 
-async def start_task_final(client: Client, message_context: Message, task_data: dict, delay: int, user_id: int):
-    # FIX 1: Check Limit Here
-    if user_id not in ADMINS and batch_temp.ACTIVE_TASKS[user_id] >= MAX_CONCURRENT_TASKS_PER_USER:
+# ==============================================================================
+# --- NEW ROBUSTNESS HELPERS ---
+# ==============================================================================
+
+async def send_log(text):
+    """Sends errors/alerts to the Configured Log Channel/Topic"""
+    if not LOG_CHANNEL:
+        return
+    try:
+        chat_id = LOG_CHANNEL
+        topic_id = None
+        
+        # Check if "ID/TOPIC" format
+        if "/" in LOG_CHANNEL:
+            parts = LOG_CHANNEL.split("/")
+            chat_id = int(parts[0])
+            topic_id = int(parts[1])
+        else:
+            chat_id = int(LOG_CHANNEL)
+
+        await app.send_message(chat_id, text, message_thread_id=topic_id)
+    except Exception as e:
+        print(f"❌ Failed to send log: {e}")
+
+async def check_disk_space():
+    """Returns False if free space is < 500MB"""
+    try:
+        total, used, free = shutil.disk_usage(".")
+        free_mb = free / (1024 * 1024)
+        if free_mb < 500: # Limit: 500MB
+            return False
+        return True
+    except:
+        return True
+
+async def cleanup_watchdog():
+    """Runs every 10 mins to clean stuck download folders older than 2 hours"""
+    while True:
+        await asyncio.sleep(600) # Check every 10 mins
         try:
-            msg = f"⚠️ **Limit Reached:** You have {batch_temp.ACTIVE_TASKS[user_id]} active tasks. Please wait."
-            if isinstance(message_context, Message):
-                if message_context.from_user.is_bot:
-                    await message_context.edit(msg)
-                else:
-                    await message_context.reply(msg)
-        except:
-            pass
+            download_path = Path("./downloads")
+            if not download_path.exists(): continue
+            
+            current_time = time.time()
+            # 2 hours in seconds
+            max_age = 2 * 60 * 60 
+            
+            for user_folder in download_path.iterdir():
+                if user_folder.is_dir():
+                    for task_folder in user_folder.iterdir():
+                        if task_folder.is_dir():
+                            folder_time = task_folder.stat().st_mtime
+                            if (current_time - folder_time) > max_age:
+                                shutil.rmtree(task_folder)
+                                await send_log(f"🧹 **Auto-Cleanup:** Deleted stuck folder `{task_folder.name}` (Older than 2h)")
+        except Exception as e:
+            print(f"Watchdog Error: {e}")
+            
+async def start_task_final(client: Client, message_context: Message, task_data: dict, delay: int, user_id: int):
+    # 1. DISK SPACE PRE-CHECK
+    if not await check_disk_space():
+        msg = "⚠️ **Server Busy:** Disk is almost full. Please wait for other tasks to finish."
+        if isinstance(message_context, Message):
+             await message_context.reply(msg, quote=True)
+        await send_log("🚨 **Critical:** Disk Space Low (<500MB). Tasks rejected.")
         return
 
+    # 2. QUEUE SYSTEM
+    # If user has hit their limit (e.g., 2 tasks), queue this one.
+    if user_id not in ADMINS and batch_temp.ACTIVE_TASKS[user_id] >= MAX_CONCURRENT_TASKS_PER_USER:
+        TASK_QUEUE[user_id].append({
+            "client": client,
+            "message": message_context,
+            "data": task_data,
+            "delay": delay
+        })
+        position = len(TASK_QUEUE[user_id])
+        await message_context.reply(f"⏳ **Added to Queue:** Position #{position}\nTask will start automatically when your current tasks finish.", quote=True)
+        return
+
+    # 3. START TASK (Standard Logic)
     task_uuid = uuid.uuid4().hex
     dest = task_data.get("dest_title", "Direct Message")
     
-    # FIX 2: Increment Counter Here (Only Once)
     batch_temp.ACTIVE_TASKS[user_id] += 1
     batch_temp.IS_BATCH[user_id] = False
 
+    start_msg = f"✅ **Task Started!**\nDestination: `{dest}`\nSpeed: `{delay}s` delay\nTask ID: `{task_uuid[:8]}`"
     try:
         if isinstance(message_context, Message):
             if message_context.from_user.is_bot:
-                await message_context.edit(f"✅ **Task Started!**\nDestination: `{dest}`\nSpeed: `{delay}s` delay\nTask ID: `{task_uuid[:8]}`")
+                await message_context.edit(start_msg)
             else:
-                await message_context.reply(f"✅ **Task Started!**\nDestination: `{dest}`\nSpeed: `{delay}s` delay\nTask ID: `{task_uuid[:8]}`")
-    except:
-        pass
+                await message_context.reply(start_msg)
+    except: pass
+    
+    # Log to Channel
+    await send_log(f"▶️ **Task Started**\nUser: `{user_id}`\nLink: `{task_data['link'][:40]}...`")
 
     if user_id not in ACTIVE_PROCESSES:
         ACTIVE_PROCESSES[user_id] = {}
@@ -1258,23 +1343,46 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                                 current_topic = msg.message_thread_id
                                 if current_topic != filter_thread_id:
                                     needs_retry = False
-                                    await asyncio.sleep(6)
-                                    break
+                                    break # Skip this msg without waiting 6s
+                            
+                            # --- ROBUST LOGIC START ---
                             if "https://t.me/c/" in text:
                                 is_success = await handle_private(client, acc, message, chatid, msgid, index, total_count, status_message, dest_chat_id, dest_thread_id, delay, user_id, task_uuid)
                             else:
                                 try:
                                     await client.copy_message(dest_chat_id, msg.chat.id, msg.id, message_thread_id=dest_thread_id)
                                     is_success = True
-                                    await asyncio.sleep(delay)
                                 except:
+                                    # Fallback to download/upload if copy fails
                                     is_success = await handle_private(client, acc, message, chatid, msgid, index, total_count, status_message, dest_chat_id, dest_thread_id, delay, user_id, task_uuid)
+                            # --- ROBUST LOGIC END ---
+
                         else:
-                            await asyncio.sleep(6)
+                            # Message deleted or empty
+                            is_success = False
+
+                        # FIX: UNIVERSAL SLEEP (Applies to ALL success types - Copy, DL, or Text)
+                        if is_success:
+                            await asyncio.sleep(delay) # Minimum 3s delay
+                        else:
+                            await asyncio.sleep(2) # Small penalty for failures
 
                         needs_retry = False
+
                     except FloodWait as e:
-                        await asyncio.sleep(e.value + 6)
+                        print(f"FloodWait encountered: {e.value} s")
+                        # FIX: ABORT IF FLOODWAIT IS DANGEROUS (> 2 MINUTES)
+                        if e.value > 120:
+                            try:
+                                await client.send_message(
+                                    message.chat.id, 
+                                    f"🚨 **Task Aborted:** Telegram demanded a wait of {e.value}s (FloodWait).\nTo protect your account, this task has been stopped."
+                                )
+                            except: pass
+                            return # Stop the function entirely
+                        
+                        await asyncio.sleep(e.value + 5)
+                    
                     except Exception as loop_e:
                         print(f"Loop Error: {loop_e}")
                         is_success = False
@@ -1285,8 +1393,10 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 else:
                     failed_count += 1
 
+                # FIX: OPTIMIZED STATUS UPDATES (Reduces API spam)
                 current_time = time.time()
-                if (current_time - last_update_time) > 60:
+                # Update only every 20 messages OR if 60 seconds passed
+                if (index % 20 == 0) or ((current_time - last_update_time) > 60):
                     last_update_time = current_time
                     elapsed_time = current_time - start_time
                     if elapsed_time > 0:
@@ -1307,31 +1417,51 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                         )
                     except Exception as e:
                         print(f"Error updating status: {e}")
-
+                        
         except Exception as e:
-            print(f"Error in task setup: {e}")
+            print(f"Critical Task Error: {e}")
+            # Sends error to your Log Channel (if configured)
+            await send_log(f"❌ **Task Crashed**\nUser: `{acc_user_id}`\nError: `{e}`")
+
         finally:
-            if task_uuid in ACTIVE_PROCESSES.get(user_id, {}):
-                try:
-                    del ACTIVE_PROCESSES[user_id][task_uuid]
-                except:
-                    pass
-            if user_id in ACTIVE_PROCESSES and not ACTIVE_PROCESSES[user_id]:
-                try: del ACTIVE_PROCESSES[user_id]
+            # 1. Cleanup Active Process List
+            if task_uuid in ACTIVE_PROCESSES.get(acc_user_id, {}):
+                try: del ACTIVE_PROCESSES[acc_user_id][task_uuid]
+                except: pass
+            if acc_user_id in ACTIVE_PROCESSES and not ACTIVE_PROCESSES[acc_user_id]:
+                try: del ACTIVE_PROCESSES[acc_user_id]
                 except: pass
 
-            batch_temp.ACTIVE_TASKS[user_id] -= 1
-            if batch_temp.ACTIVE_TASKS[user_id] < 0:
-                batch_temp.ACTIVE_TASKS[user_id] = 0
-            if batch_temp.ACTIVE_TASKS[user_id] == 0:
-                batch_temp.IS_BATCH[user_id] = False
+            # 2. Decrement Counter
+            batch_temp.ACTIVE_TASKS[acc_user_id] -= 1
+            if batch_temp.ACTIVE_TASKS[acc_user_id] < 0:
+                batch_temp.ACTIVE_TASKS[acc_user_id] = 0
+            if batch_temp.ACTIVE_TASKS[acc_user_id] == 0:
+                batch_temp.IS_BATCH[acc_user_id] = False
+            
+            # 3. CHECK QUEUE (The Magic Part ✨)
+            # If the user has items in their queue, start the next one immediately.
+            if TASK_QUEUE[acc_user_id]:
+                next_item = TASK_QUEUE[acc_user_id].pop(0)
+                asyncio.create_task(start_task_final(
+                    next_item["client"],
+                    next_item["message"],
+                    next_item["data"],
+                    next_item["delay"],
+                    acc_user_id
+                ))
+                # Optional: Notify user
+                try:
+                    await next_item["message"].reply("🏃 **Queue Update:** Your next task is starting now!", quote=True)
+                except: pass
 
+            # 4. Standard Session Cleanup
             if LOGIN_SYSTEM == True and acc:
                 try:
                     if acc.is_connected: await acc.stop()
-                except:
-                    pass
+                except: pass
 
+            # 5. Send Completion Message
             if 'was_cancelled' in locals() and was_cancelled:
                 try:
                     await client.send_message(
@@ -1361,7 +1491,7 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             if 'status_message' in locals() and status_message:
                 try: await status_message.delete()
                 except: pass
-
+                
 # ==============================================================================
 # --- handle_private: downloads & uploads with per-task cancel checks ---
 # ==============================================================================
@@ -1548,11 +1678,16 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
             # Note: If uploader is 'acc', it sends to dest_chat_id as the User.
             # If dest_chat_id is the Bot's DM, the file will appear in "Saved Messages" of the User.
 
+        # --- FIX: RETRY LOGIC FOR UPLOADS ---
+        upload_attempts = 0
+        max_retries = 1
+
         async with USER_UPLOAD_LOCKS[user_id]:
             async with UPLOAD_SEMAPHORE:
                 while True:
                     if batch_temp.IS_BATCH.get(user_id) or (task_uuid and CANCEL_FLAGS.get(task_uuid)):
                         break
+                        
                     try:
                         if "Document" == msg_type:
                             await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=caption, message_thread_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
@@ -1568,19 +1703,30 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                             await uploader.send_animation(dest_chat_id, file_path, caption=caption, message_thread_id=dest_thread_id)
                         elif "Sticker" == msg_type:
                             await uploader.send_sticker(dest_chat_id, file_path, message_thread_id=dest_thread_id)
+                        
                         upload_success = True
-                        break
+                        break # Success! Exit loop.
+
                     except Exception as e:
                         if "CANCELLED_BY_USER" in str(e):
                             upload_success = False
                             break
+                        
                         if isinstance(e, FloodWait):
+                            # FloodWait isn't a "failure", it's a pause. Don't increment retries.
+                            print(f"FloodWait: Sleeping {e.value}s...")
                             await asyncio.sleep(e.value)
                         else:
-                            print(f"Upload failed: {e}")
-                            upload_success = False
-                            break
-        
+                            # Genuine Error (Network, Timeout, etc.)
+                            upload_attempts += 1
+                            if upload_attempts < max_retries:
+                                print(f"Upload Error (Attempt {upload_attempts}/{max_retries}): {e}. Retrying in 5s...")
+                                await asyncio.sleep(5) # Wait 5s before retrying
+                            else:
+                                print(f"Upload Failed Permanently after {max_retries} attempts: {e}")
+                                upload_success = False
+                                break
+                                     
         return upload_success
 
     finally:
@@ -1633,11 +1779,14 @@ async def main():
             print("✅ Cleanup: Deleted old downloads folder.")
         except Exception as e:
             print(f"⚠️ Cleanup Error: {e}")
+            
+    # START THE WATCHDOG HERE
+    asyncio.create_task(cleanup_watchdog())
+    print("🛡️ Auto-Cleanup Watchdog Started")
+
     await app.start()
     print("Bot Started")
     asyncio.create_task(start_koyeb_health_check())
     await idle()
     await app.stop()
-
-if __name__ == "__main__":
-    app.run(main())
+    
