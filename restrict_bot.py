@@ -1790,3 +1790,6 @@ async def main():
     await idle()
     await app.stop()
     
+if __name__ == "__main__":
+    app.run(main())
+    
