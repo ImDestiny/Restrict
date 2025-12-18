@@ -1345,25 +1345,29 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                                     needs_retry = False
                                     break # Skip this msg without waiting 6s
                                     
-                                   # --- OPTIMIZED FORWARDING ---
+                            # ---- FORWARDING LOGIC ---
                             is_success = False
                             try:
                                 await acc.copy_message(
-                                    dest_chat_id, 
-                                    msg.chat.id, 
-                                    msg.id, 
+                                    chat_id=dest_chat_id, 
+                                    from_chat_id=msg.chat.id, 
+                                    message_id=msg.id, 
                                     message_thread_id=dest_thread_id
                                 )
                                 is_success = True
-                                await asyncio.sleep(delay)
-
                             except Exception as e:
-                                print(f"Server-side forward failed (Restricted?): {e}")
+                                print(f"User-session forward failed: {e}")
                                 is_success = await handle_private(
                                     client, acc, message, chatid, msgid, index, total_count, 
                                     status_message, dest_chat_id, dest_thread_id, delay, user_id, task_uuid
                                 )                              
-                           # --- OPTIMIZED LOGIC END ---                        
+
+                            if is_success:
+                                await asyncio.sleep(delay)
+                            else:
+                                await asyncio.sleep(1) # Small gap for skipped/failed messages
+                                
+                            # ---- FORWARDING LOGIC ENDS ---                 
                         
                         else:
                             # Message deleted or empty
