@@ -1344,19 +1344,27 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                                 if current_topic != filter_thread_id:
                                     needs_retry = False
                                     break # Skip this msg without waiting 6s
-                            
-                            # --- ROBUST LOGIC START ---
-                            if "https://t.me/c/" in text:
-                                is_success = await handle_private(client, acc, message, chatid, msgid, index, total_count, status_message, dest_chat_id, dest_thread_id, delay, user_id, task_uuid)
-                            else:
-                                try:
-                                    await client.copy_message(dest_chat_id, msg.chat.id, msg.id, message_thread_id=dest_thread_id)
-                                    is_success = True
-                                except:
-                                    # Fallback to download/upload if copy fails
-                                    is_success = await handle_private(client, acc, message, chatid, msgid, index, total_count, status_message, dest_chat_id, dest_thread_id, delay, user_id, task_uuid)
-                            # --- ROBUST LOGIC END ---
-
+                                    
+                            # --- FIXED FORWARDING LOGIC ---
+                            try:
+                                # Try to forward directly (works for all sizes if not restricted)
+                                await client.copy_message(
+                                    dest_chat_id, 
+                                    msg.chat.id, 
+                                    msg.id, 
+                                    message_thread_id=dest_thread_id
+                                )
+                                is_success = True
+                                # Keep the delay to avoid FloodWait
+                                await asyncio.sleep(delay)
+                            except Exception:
+                                # ONLY fallback to download if forwarding is actually restricted
+                                is_success = await handle_private(
+                                    client, acc, message, chatid, msgid, index, total_count, 
+                                    status_message, dest_chat_id, dest_thread_id, delay, user_id, task_uuid
+                                )
+                            # --- FIXED LOGIC END ---                        
+                        
                         else:
                             # Message deleted or empty
                             is_success = False
