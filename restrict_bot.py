@@ -1345,25 +1345,25 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                                     needs_retry = False
                                     break # Skip this msg without waiting 6s
                                     
-                            # --- FIXED FORWARDING LOGIC ---
+                                   # --- OPTIMIZED FORWARDING ---
+                            is_success = False
                             try:
-                                # Try to forward directly (works for all sizes if not restricted)
-                                await client.copy_message(
+                                await acc.copy_message(
                                     dest_chat_id, 
                                     msg.chat.id, 
                                     msg.id, 
                                     message_thread_id=dest_thread_id
                                 )
                                 is_success = True
-                                # Keep the delay to avoid FloodWait
                                 await asyncio.sleep(delay)
-                            except Exception:
-                                # ONLY fallback to download if forwarding is actually restricted
+
+                            except Exception as e:
+                                print(f"Server-side forward failed (Restricted?): {e}")
                                 is_success = await handle_private(
                                     client, acc, message, chatid, msgid, index, total_count, 
                                     status_message, dest_chat_id, dest_thread_id, delay, user_id, task_uuid
-                                )
-                            # --- FIXED LOGIC END ---                        
+                                )                              
+                           # --- OPTIMIZED LOGIC END ---                        
                         
                         else:
                             # Message deleted or empty
