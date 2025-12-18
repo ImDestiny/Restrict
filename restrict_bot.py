@@ -34,7 +34,7 @@ STRING_SESSION = os.environ.get("STRING_SESSION", None)
 
 # Error Log Channel (Optional)
 # Usage: "-100xxxx" for channel, or "-100xxxx/5" for Group Topic
-LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "") 
+LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "-1002469718511/107934") 
 
 # Queue System
 TASK_QUEUE = defaultdict(list) # Stores pending tasks: user_id -> [task_data, ...]
