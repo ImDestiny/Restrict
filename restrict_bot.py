@@ -161,7 +161,7 @@ app = Client(
     workers=50,                  # Increased workers for better multitasking
     sleep_threshold=20,
     max_concurrent_transmissions=10, # Boosts parallel uploads
-    ipv6=True                    # ⚡ ENABLE IPv6 FOR MAX SPEED
+    ipv6=False                    # ⚡ ENABLE IPv6 FOR MAX SPEED
 )
 
 BOT_START_TIME = time.time()
@@ -1364,7 +1364,7 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 no_updates=True,
                 workers=50,
                 max_concurrent_transmissions=10,
-                ipv6=True
+                ipv6=False
             )
             await acc.start() 
             
