@@ -1362,8 +1362,8 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 api_hash=api_hash, 
                 api_id=api_id, 
                 no_updates=True,
-                workers=50,
-                max_concurrent_transmissions=10,
+                workers=4,
+                max_concurrent_transmissions=2,
                 ipv6=False
             )
             await acc.start() 
