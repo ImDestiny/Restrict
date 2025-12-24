@@ -4,3 +4,4 @@ motor
 aiohttp
 psutil
 dnspython
+uvloop
