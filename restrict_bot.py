@@ -22,12 +22,7 @@ from pyrogram.errors import (
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 from concurrent.futures import ThreadPoolExecutor
 
-try:
-    import uvloop
-    uvloop.install()
-except ImportError:
-    pass
-    
+
 # ==============================================================================
 # --- CONFIGURATION ---
 # ==============================================================================
