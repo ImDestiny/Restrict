@@ -1,4 +1,4 @@
-pyrofork==2.2.11
+pyrofork==2.3.45
 tgcrypto
 motor
 aiohttp
